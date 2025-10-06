@@ -6,7 +6,7 @@ project(cppli
     LANGUAGES CXX
 )
 
-add_library(${PROJECT_NAME} SHARED
+add_library(${PROJECT_NAME} STATIC
     src/cppli.cpp
     include/cppli.hpp
 )
