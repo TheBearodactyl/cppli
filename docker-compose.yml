@@ -1,0 +1,9 @@
+services:
+  cpp-docs:
+    build: .
+    container_name: cpp_docs
+    ports:
+      - "24354:80"
+    volumes:
+      - .:/app
+    command: sh -c "doxygen Doxyfile && cp -r docs/html/* /var/www/localhost/htdocs/ && lighttpd -D -f /etc/lighttpd/lighttpd.conf"
