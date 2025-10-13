@@ -56,16 +56,12 @@ namespace cli {
 	}
 
 	Parser &Parser::add_help_flag() {
-		auto &flag = add_flag<std::string>("help", "Display this help message");
-		flag.set_short_name("h");
-		help_requested_ = false;
+		add_flag<bool>("help", "Display this help message").set_short_name("h");
 		return *this;
 	}
 
 	Parser &Parser::add_version_flag() {
-		auto &flag = add_flag<std::string>("version", "Display version information");
-		flag.set_short_name("V");
-		version_requested_ = false;
+		add_flag<bool>("version", "Display version information").set_short_name("V");
 		return *this;
 	}
 
@@ -84,6 +80,15 @@ namespace cli {
 	}
 
 	Result<void> Parser::parse(const std::vector<std::string> &args) {
+		short_to_long_.clear();
+		for (const auto &[name, storage]: flags_) {
+			const auto s_name = storage.get_short_name();
+
+			if (! s_name.empty()) {
+				short_to_long_[s_name] = name;
+			}
+		}
+
 		size_t pos_index = 0;
 		bool after_double_dash = false;
 
@@ -132,15 +137,11 @@ namespace cli {
 			}
 
 			if (flag_name == "help") {
-				print_help();
 				help_requested_ = true;
-				std::exit(0);
 			}
 
 			if (flag_name == "version") {
-				print_version();
 				version_requested_ = true;
-				std::exit(0);
 			}
 
 			auto flag_it = flags_.find(flag_name);
@@ -148,13 +149,29 @@ namespace cli {
 				return Result<void>::err(Error::unknown_flag(arg));
 			}
 
+			bool is_boolean_flag = flag_it->second.is_boolean();
+
 			if (! has_value && i + 1 < args.size() && ! args[i + 1].starts_with("-")) {
-				flag_value = args[++i];
+				std::string_view next_arg = args[i + 1];
+
+				if (! is_boolean_flag) {
+					flag_value = args[++i];
+					has_value = true;
+				} else {
+					if (next_arg == "true" || next_arg == "false" || next_arg == "1" || next_arg == "0" || next_arg == "yes" || next_arg == "no" || next_arg == "on" || next_arg == "off") {
+						flag_value = args[++i];
+						has_value = true;
+					}
+				}
+			}
+
+			if (! has_value && is_boolean_flag) {
+				flag_value = "true";
 				has_value = true;
 			}
 
 			if (! has_value) {
-				flag_value = "true";
+				return Result<void>::err(Error::missing_flag_value(flag_name));
 			}
 
 			auto result = flag_it->second.set_value(flag_value);
@@ -164,6 +181,11 @@ namespace cli {
 		}
 
 		parsed_ = true;
+
+		if (help_requested_ || version_requested_) {
+			return Result<void>::ok();
+		}
+
 		return validate_requirements();
 	}
 

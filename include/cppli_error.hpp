@@ -76,8 +76,6 @@ namespace cli {
 		 */
 		[[nodiscard]] std::string format() const;
 
-		// Factory helpers to create specific error flavors:
-
 		/**
 		 * @brief Unknown flag name (e.g. "--bogus").
 		 */
@@ -129,7 +127,7 @@ namespace cli {
 	 * @code
 	 * cli::Result<int> r = parse_int("123");
 	 * if (!r) { std::cerr << r.error().format(); }
-	 * int value = r.value(); // only when r is ok
+	 * int value = r.value();
 	 * @endcode
 	 *
 	 * Notes:

@@ -79,6 +79,7 @@ namespace cli {
 			std::function<std::string()> get_description;					///< description accessor
 			std::function<std::string()> format_for_help;					///< prepared help line formatter
 			std::function<std::optional<std::string>()> get_value_as_string;///< get value as string
+			std::function<bool()> is_boolean;								///< whether this is a boolean flag
 
 			FlagStorage()
 				: ptr(nullptr, [](void *) {
@@ -181,12 +182,13 @@ namespace cli {
 			return std::nullopt;
 		};
 
-		if (! flag_ptr->short_name().empty()) {
-			short_to_long_[flag_ptr->short_name()] = long_name;
-		}
+		storage.is_boolean = []() {
+			return std::is_same_v<T, bool>;
+		};
 
+		auto *result_ptr = storage.ptr.get();
 		flags_[long_name] = std::move(storage);
-		return *static_cast<TypedFlag<T> *>(flag_ptr);
+		return *static_cast<TypedFlag<T> *>(result_ptr);
 	}
 
 	template <typename T>
