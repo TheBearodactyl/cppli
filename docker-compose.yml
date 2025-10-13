@@ -3,7 +3,7 @@ services:
     build: .
     container_name: cpp_docs
     ports:
-      - "24354:80"
+      - "24354:24354"
     volumes:
       - .:/app
-    command: sh -c "doxygen Doxyfile && cp -r docs/html/* /var/www/localhost/htdocs/ && lighttpd -D -f /etc/lighttpd/lighttpd.conf"
+    command: sh -c "doxygen Doxyfile || true && python3 -m http.server 24354 --directory docs/html"
