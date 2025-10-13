@@ -131,11 +131,6 @@ namespace cli {
 				}
 			}
 
-			auto flag_it = flags_.find(flag_name);
-			if (flag_it == flags_.end()) {
-				return Result<void>::err(Error::unknown_flag(arg));
-			}
-
 			if (flag_name == "help") {
 				print_help();
 				help_requested_ = true;
@@ -146,6 +141,11 @@ namespace cli {
 				print_version();
 				version_requested_ = true;
 				std::exit(0);
+			}
+
+			auto flag_it = flags_.find(flag_name);
+			if (flag_it == flags_.end()) {
+				return Result<void>::err(Error::unknown_flag(arg));
 			}
 
 			if (! has_value && i + 1 < args.size() && ! args[i + 1].starts_with("-")) {
@@ -247,6 +247,7 @@ namespace cli {
 				oss << " [" << pos.get_name() << "]";
 			}
 		}
+
 		oss << "\n\n";
 
 		if (! flags_.empty()) {
@@ -273,5 +274,4 @@ namespace cli {
 
 		return oss.str();
 	}
-
 }// namespace cli

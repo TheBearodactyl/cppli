@@ -1,8 +1,9 @@
+// cppli.hpp - Modified header with fixed type erasure
 #ifndef CPPLI_HPP
 #define CPPLI_HPP
 
-#include <cppli_error.hpp>
-#include <cppli_types.hpp>
+#include "cppli_error.hpp"
+#include "cppli_types.hpp"
 #include <iostream>
 #include <map>
 #include <memory>
@@ -69,14 +70,15 @@ namespace cli {
 		 * wrappers to set, validate, and query the flag properties without knowing T.
 		 */
 		struct FlagStorage {
-			std::unique_ptr<void, void (*)(void *)> ptr;			///< owning pointer to TypedFlag<T>
-			std::function<Result<void>(std::string_view)> set_value;///< set value from string
-			std::function<Result<void>()> validate;					///< run validation
-			std::function<bool()> has_value;						///< whether value is present
-			std::function<bool()> is_required;						///< whether flag is required
-			std::function<std::string()> get_short_name;			///< short name accessor
-			std::function<std::string()> get_description;			///< description accessor
-			std::function<std::string()> format_for_help;			///< prepared help line formatter
+			std::unique_ptr<void, void (*)(void *)> ptr;					///< owning pointer to TypedFlag<T>
+			std::function<Result<void>(std::string_view)> set_value;		///< set value from string
+			std::function<Result<void>()> validate;							///< run validation
+			std::function<bool()> has_value;								///< whether value is present
+			std::function<bool()> is_required;								///< whether flag is required
+			std::function<std::string()> get_short_name;					///< short name accessor
+			std::function<std::string()> get_description;					///< description accessor
+			std::function<std::string()> format_for_help;					///< prepared help line formatter
+			std::function<std::optional<std::string>()> get_value_as_string;///< get value as string
 
 			FlagStorage()
 				: ptr(nullptr, [](void *) {
@@ -88,12 +90,13 @@ namespace cli {
 		 * @brief Type-erased container for any TypedPositional<T>.
 		 */
 		struct PositionalStorage {
-			std::unique_ptr<void, void (*)(void *)> ptr;			///< owning pointer to TypedPositional<T>
-			std::function<Result<void>(std::string_view)> set_value;///< set value from string
-			std::function<bool()> has_value;						///< whether value is present
-			std::function<bool()> is_required;						///< whether positional is required
-			std::function<std::string()> get_name;					///< name accessor
-			std::function<std::string()> get_description;			///< description accessor
+			std::unique_ptr<void, void (*)(void *)> ptr;					///< owning pointer to TypedPositional<T>
+			std::function<Result<void>(std::string_view)> set_value;		///< set value from string
+			std::function<bool()> has_value;								///< whether value is present
+			std::function<bool()> is_required;								///< whether positional is required
+			std::function<std::string()> get_name;							///< name accessor
+			std::function<std::string()> get_description;					///< description accessor
+			std::function<std::optional<std::string>()> get_value_as_string;///< get value as string
 
 			PositionalStorage()
 				: ptr(nullptr, [](void *) {
@@ -162,8 +165,20 @@ namespace cli {
 		storage.get_description = [flag_ptr]() {
 			return flag_ptr->description();
 		};
-		storage.format_for_help = [this, flag_ptr, long_name]() {
+		storage.format_for_help = [this, flag_ptr, long_name = std::string(long_name)]() {
 			return this->format_flag_for_help(flags_.at(long_name), long_name);
+		};
+		storage.get_value_as_string = [flag_ptr]() -> std::optional<std::string> {
+			if (flag_ptr->has_value()) {
+				if constexpr (std::is_same_v<T, std::string>) {
+					return flag_ptr->value();
+				} else if constexpr (std::is_same_v<T, bool>) {
+					return flag_ptr->value() ? "true" : "false";
+				} else {
+					return std::to_string(*flag_ptr->value());
+				}
+			}
+			return std::nullopt;
 		};
 
 		if (! flag_ptr->short_name().empty()) {
@@ -171,7 +186,7 @@ namespace cli {
 		}
 
 		flags_[long_name] = std::move(storage);
-		return *flag_ptr;
+		return *static_cast<TypedFlag<T> *>(flag_ptr);
 	}
 
 	template <typename T>
@@ -198,9 +213,21 @@ namespace cli {
 		storage.get_description = [pos_ptr]() {
 			return pos_ptr->description();
 		};
+		storage.get_value_as_string = [pos_ptr]() -> std::optional<std::string> {
+			if (pos_ptr->has_value()) {
+				if constexpr (std::is_same_v<T, std::string>) {
+					return pos_ptr->value();
+				} else if constexpr (std::is_same_v<T, bool>) {
+					return pos_ptr->value() ? "true" : "false";
+				} else {
+					return std::to_string(*pos_ptr->value());
+				}
+			}
+			return std::nullopt;
+		};
 
 		positionals_.push_back(std::move(storage));
-		return *pos_ptr;
+		return *static_cast<TypedPositional<T> *>(positionals_.back().ptr.get());
 	}
 
 	template <typename T>
@@ -210,8 +237,13 @@ namespace cli {
 			return std::nullopt;
 		}
 
-		auto *flag = static_cast<TypedFlag<T> *>(it->second.ptr.get());
-		return flag->value();
+		auto *flag_ptr = static_cast<TypedFlag<T> *>(it->second.ptr.get());
+
+		if (! flag_ptr->has_value()) {
+			return std::nullopt;
+		}
+
+		return flag_ptr->value();
 	}
 
 	template <typename T>
@@ -220,16 +252,26 @@ namespace cli {
 			return std::nullopt;
 		}
 
-		auto *pos = static_cast<TypedPositional<T> *>(positionals_[index].ptr.get());
-		return pos->value();
+		auto *pos_ptr = static_cast<TypedPositional<T> *>(positionals_[index].ptr.get());
+
+		if (! pos_ptr->has_value()) {
+			return std::nullopt;
+		}
+
+		return pos_ptr->value();
 	}
 
 	template <typename T>
 	std::optional<T> Parser::get_positional(std::string_view name) const {
 		for (const auto &pos_storage: positionals_) {
 			if (pos_storage.get_name() == name) {
-				auto *pos = static_cast<TypedPositional<T> *>(pos_storage.ptr.get());
-				return pos->value();
+				auto *pos_ptr = static_cast<TypedPositional<T> *>(pos_storage.ptr.get());
+
+				if (! pos_ptr->has_value()) {
+					return std::nullopt;
+				}
+
+				return pos_ptr->value();
 			}
 		}
 		return std::nullopt;
