@@ -11,97 +11,61 @@
 
 namespace cli {
 
-	/**
-     * @brief RAII helper class for ANSI color codes
-     * 
-     * Automatically applies color to output streams when connected to a terminal
-     * and resets formatting upon destruction.
-     */
-	class ColorGuard {
-	  public:
+	namespace {
 		/**
-         * @brief Construct a ColorGuard and apply color
-         * @param os Output stream to colorize
-         * @param color ANSI color code string
-         */
-		ColorGuard(std::ostream &os, const char *color) : os_(os) {
-			if (is_tty())
-				os_ << color;
-		}
-
-		/**
-         * @brief Destructor that resets color formatting
-         */
-		~ColorGuard() {
-			if (is_tty())
-				os_ << "\033[0m";
-		}
-
-	  private:
-		std::ostream &os_;///< Reference to the output stream
-
-		/**
-         * @brief Check if stdout is connected to a terminal
-         * @returns True if stdout is a TTY, false otherwise
-         */
-		static bool is_tty() {
-			static bool checked = false;
-			static bool is_terminal = false;
-			if (! checked) {
-#ifdef _WIN32
-				is_terminal = _isatty(_fileno(stdout)) != 0;
-#else
-				is_terminal = isatty(fileno(stdout)) == 1;
-#endif
-				checked = true;
+		 * @brief RAII helper class for ANSI color codes
+		 */
+		class ColorGuard {
+		  public:
+			ColorGuard(std::ostream &os, const char *color) : os_(os) {
+				if (is_tty())
+					os_ << color;
 			}
-			return is_terminal;
-		}
-	};
 
-	constexpr const char *RESET = "\033[0m";  ///< ANSI reset code
-	constexpr const char *BOLD = "\033[1m";	  ///< ANSI bold code
-	constexpr const char *GREEN = "\033[32m"; ///< ANSI green color code
-	constexpr const char *YELLOW = "\033[33m";///< ANSI yellow color code
-	constexpr const char *RED = "\033[31m";	  ///< ANSI red color code
+			~ColorGuard() {
+				if (is_tty())
+					os_ << "\033[0m";
+			}
+
+		  private:
+			std::ostream &os_;
+
+			static bool is_tty() {
+				static bool checked = false;
+				static bool is_terminal = false;
+				if (! checked) {
+#ifdef _WIN32
+					is_terminal = _isatty(_fileno(stdout)) != 0;
+#else
+					is_terminal = isatty(fileno(stdout)) == 1;
+#endif
+					checked = true;
+				}
+				return is_terminal;
+			}
+		};
+
+		constexpr const char *RESET = "\033[0m";
+		constexpr const char *BOLD = "\033[1m";
+		constexpr const char *GREEN = "\033[32m";
+		constexpr const char *YELLOW = "\033[33m";
+		constexpr const char *RED = "\033[31m";
+	}// namespace
 
 	Parser::Parser(std::string app_name, std::string description, std::string version) : app_name_(std::move(app_name)), description_(std::move(description)), version_(std::move(version)) {
 	}
 
 	Parser &Parser::add_help_flag() {
-		Flag flag;
-		flag.short_name = "h";
-		flag.long_name = "help";
-		flag.description = "Display this help message";
-		flag.action = [this]() {
-			print_help();
-			std::exit(0);
-		};
-		flags_["help"] = std::move(flag);
-		short_to_long_["h"] = "help";
+		auto &flag = add_flag<std::string>("help", "Display this help message");
+		flag.set_short_name("h");
+		help_requested_ = false;
 		return *this;
 	}
 
 	Parser &Parser::add_version_flag() {
-		Flag flag;
-		flag.short_name = "V";
-		flag.long_name = "version";
-		flag.description = "Display version information";
-		flag.action = [this]() {
-			print_version();
-			std::exit(0);
-		};
-		flags_["version"] = std::move(flag);
-		short_to_long_["V"] = "version";
-		return *this;
-	}
-
-	Parser &Parser::add_positional(std::string name, std::string description, bool required) {
-		Positional pos;
-		pos.name = std::move(name);
-		pos.description = std::move(description);
-		pos.required = required;
-		positionals_.push_back(std::move(pos));
+		auto &flag = add_flag<std::string>("version", "Display version information");
+		flag.set_short_name("V");
+		version_requested_ = false;
 		return *this;
 	}
 
@@ -110,15 +74,16 @@ namespace cli {
 		return *this;
 	}
 
-	ParseResult Parser::parse(int argc, char **argv) {
+	Result<void> Parser::parse(int argc, char **argv) {
 		std::vector<std::string> args;
+		args.reserve(static_cast<size_t>(argc) - 1);
 		for (int i = 1; i < argc; ++i) {
 			args.emplace_back(argv[i]);
 		}
 		return parse(args);
 	}
 
-	ParseResult Parser::parse(const std::vector<std::string> &args) {
+	Result<void> Parser::parse(const std::vector<std::string> &args) {
 		size_t pos_index = 0;
 		bool after_double_dash = false;
 
@@ -130,11 +95,16 @@ namespace cli {
 				continue;
 			}
 
-			if (after_double_dash || (arg[0] != '-')) {
+			if (after_double_dash || (arg.empty() || arg[0] != '-')) {
 				if (pos_index >= positionals_.size()) {
-					return ParseResult::err("Too many positional arguments");
+					return Result<void>::err(Error::too_many_positionals());
 				}
-				positionals_[pos_index++].value = arg;
+
+				auto result = positionals_[pos_index].set_value(arg);
+				if (! result) {
+					return result;
+				}
+				++pos_index;
 				continue;
 			}
 
@@ -152,23 +122,30 @@ namespace cli {
 					flag_name = arg.substr(2);
 				}
 			} else if (arg.starts_with("-")) {
-				flag_name = arg.substr(1);
-				auto it = short_to_long_.find(flag_name);
+				std::string short_name = arg.substr(1);
+				auto it = short_to_long_.find(short_name);
 				if (it != short_to_long_.end()) {
 					flag_name = it->second;
+				} else {
+					return Result<void>::err(Error::unknown_flag(arg));
 				}
 			}
 
 			auto flag_it = flags_.find(flag_name);
 			if (flag_it == flags_.end()) {
-				return ParseResult::err("Unknown flag: " + arg);
+				return Result<void>::err(Error::unknown_flag(arg));
 			}
 
-			auto &flag = flag_it->second;
+			if (flag_name == "help") {
+				print_help();
+				help_requested_ = true;
+				std::exit(0);
+			}
 
-			if (flag.action) {
-				flag.action();
-				return ParseResult::ok();
+			if (flag_name == "version") {
+				print_version();
+				version_requested_ = true;
+				std::exit(0);
 			}
 
 			if (! has_value && i + 1 < args.size() && ! args[i + 1].starts_with("-")) {
@@ -176,53 +153,39 @@ namespace cli {
 				has_value = true;
 			}
 
-			flag.has_value = true;
-			flag.value = has_value ? flag_value : "true";
-
-			if (! flag.validate()) {
-				return ParseResult::err("Invalid value for --" + flag_name + ": " + flag.value);
+			if (! has_value) {
+				flag_value = "true";
 			}
-		}
 
-		return validate_requirements();
-	}
-
-	ParseResult Parser::validate_requirements() {
-		for (const auto &[name, flag]: flags_) {
-			if (flag.required && ! flag.has_value) {
-				return ParseResult::err("Required flag missing: --" + name);
-			}
-		}
-
-		for (const auto &pos: positionals_) {
-			if (pos.required && pos.value.empty()) {
-				return ParseResult::err("Required positional missing: " + pos.name);
+			auto result = flag_it->second.set_value(flag_value);
+			if (! result) {
+				return result;
 			}
 		}
 
 		parsed_ = true;
-		return ParseResult::ok();
+		return validate_requirements();
+	}
+
+	Result<void> Parser::validate_requirements() const {
+		for (const auto &[name, flag]: flags_) {
+			if (flag.is_required() && ! flag.has_value()) {
+				return Result<void>::err(Error::missing_required_flag(name));
+			}
+		}
+
+		for (const auto &pos: positionals_) {
+			if (pos.is_required() && ! pos.has_value()) {
+				return Result<void>::err(Error::missing_required_positional(pos.get_name()));
+			}
+		}
+
+		return Result<void>::ok();
 	}
 
 	bool Parser::has(std::string_view flag_name) const {
 		auto it = flags_.find(std::string(flag_name));
-		return it != flags_.end() && it->second.has_value;
-	}
-
-	std::optional<std::string> Parser::get_positional(size_t index) const {
-		if (index < positionals_.size() && ! positionals_[index].value.empty()) {
-			return positionals_[index].value;
-		}
-		return std::nullopt;
-	}
-
-	std::optional<std::string> Parser::get_positional(std::string_view name) const {
-		for (const auto &pos: positionals_) {
-			if (pos.name == name && ! pos.value.empty()) {
-				return pos.value;
-			}
-		}
-		return std::nullopt;
+		return it != flags_.end() && it->second.has_value();
 	}
 
 	void Parser::print_help(std::ostream &os) const {
@@ -238,6 +201,26 @@ namespace cli {
 		os << "\n";
 	}
 
+	std::string Parser::format_flag_for_help(const FlagStorage &flag, const std::string &long_name) const {
+		std::ostringstream oss;
+
+		oss << "    ";
+		std::string short_name = flag.get_short_name();
+		if (! short_name.empty()) {
+			oss << "-" << short_name << ", ";
+		} else {
+			oss << "    ";
+		}
+
+		oss << "--" << long_name;
+
+		if (flag.is_required()) {
+			oss << " (required)";
+		}
+
+		return oss.str();
+	}
+
 	std::string Parser::generate_help() const {
 		std::ostringstream oss;
 
@@ -248,22 +231,20 @@ namespace cli {
 				oss << " v" << version_;
 			}
 		}
-
 		oss << "\n";
 
 		if (! description_.empty()) {
 			oss << description_ << "\n";
 		}
 
-		oss << "\n";
-		oss << "USAGE:\n";
+		oss << "\nUSAGE:\n";
 		oss << "    " << app_name_ << " [OPTIONS]";
 
 		for (const auto &pos: positionals_) {
-			if (pos.required) {
-				oss << " <" << pos.name << ">";
+			if (pos.is_required()) {
+				oss << " <" << pos.get_name() << ">";
 			} else {
-				oss << " [" << pos.name << "]";
+				oss << " [" << pos.get_name() << "]";
 			}
 		}
 		oss << "\n\n";
@@ -271,41 +252,10 @@ namespace cli {
 		if (! flags_.empty()) {
 			oss << "OPTIONS:\n";
 			for (const auto &[name, flag]: flags_) {
-				oss << "    ";
-				if (! flag.short_name.empty()) {
-					ColorGuard guard(oss, GREEN);
-					oss << "-" << flag.short_name << ", ";
-				} else {
-					oss << "    ";
-				}
-
-				{
-					ColorGuard guard(oss, GREEN);
-					oss << "--" << flag.long_name;
-				}
-
-				if (! flag.default_value.empty()) {
-					oss << " [default: " << flag.default_value << "]";
-				}
-				if (flag.required) {
-					ColorGuard guard(oss, RED);
-					oss << " (required)";
-				}
-
-				oss << "\n";
-
-				if (! flag.description.empty()) {
-					oss << "        " << flag.description << "\n";
-				}
-
-				if (! flag.choices.empty()) {
-					oss << "        Choices: ";
-					for (size_t i = 0; i < flag.choices.size(); ++i) {
-						if (i > 0)
-							oss << ", ";
-						oss << flag.choices[i];
-					}
-					oss << "\n";
+				oss << format_flag_for_help(flag, name) << "\n";
+				std::string desc = flag.get_description();
+				if (! desc.empty()) {
+					oss << "        " << desc << "\n";
 				}
 			}
 			oss << "\n";
@@ -324,62 +274,4 @@ namespace cli {
 		return oss.str();
 	}
 
-	FlagBuilder::FlagBuilder(Parser *parser, const std::string &long_name) : parser_(parser), long_name_(long_name) {
-	}
-
-	FlagBuilder &FlagBuilder::short_name(char name) {
-		return short_name(std::string(1, name));
-	}
-
-	FlagBuilder &FlagBuilder::short_name(const std::string &name) {
-		auto &flag = parser_->flags_[long_name_];
-		flag.short_name = name;
-		parser_->short_to_long_[name] = long_name_;
-		return *this;
-	}
-
-	FlagBuilder &FlagBuilder::long_desc(const std::string &desc) {
-		parser_->flags_[long_name_].long_description = desc;
-		return *this;
-	}
-
-	FlagBuilder &FlagBuilder::required(bool req) {
-		parser_->flags_[long_name_].required = req;
-		return *this;
-	}
-
-	FlagBuilder &FlagBuilder::default_value(const std::string &val) {
-		auto &flag = parser_->flags_[long_name_];
-		flag.default_value = val;
-		flag.value = val;
-		flag.has_value = true;
-		return *this;
-	}
-
-	FlagBuilder &FlagBuilder::choices(const std::vector<std::string> &options) {
-		parser_->flags_[long_name_].choices = options;
-		return *this;
-	}
-
-	FlagBuilder &FlagBuilder::validator(std::function<bool(const std::string &)> fn) {
-		parser_->flags_[long_name_].validator = std::move(fn);
-		return *this;
-	}
-
-	FlagBuilder &FlagBuilder::action(std::function<void()> fn) {
-		parser_->flags_[long_name_].action = std::move(fn);
-		return *this;
-	}
-
-	FlagBuilder &Parser::add_flag(std::string long_name, std::string description) {
-		if (flags_.find(long_name) == flags_.end()) {
-			Flag flag;
-			flag.long_name = long_name;
-			flag.description = std::move(description);
-			flags_[long_name] = std::move(flag);
-		}
-
-		flag_builders_.emplace_back(std::make_unique<FlagBuilder>(this, long_name));
-		return *flag_builders_.back();
-	}
 }// namespace cli
