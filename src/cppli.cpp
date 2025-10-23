@@ -72,6 +72,27 @@ namespace cli {
 		return *this;
 	}
 
+	Subcommand &Parser::add_subcommand(std::string name, std::string description) {
+		auto subcommand = std::make_unique<Subcommand>(name, std::move(description), this);
+		auto *ptr = subcommand.get();
+		subcommands_[name] = std::move(subcommand);
+		return *ptr;
+	}
+
+	std::optional<std::string> Parser::get_selected_subcommand() const {
+		return selected_subcommand_;
+	}
+
+	Subcommand *Parser::get_subcommand(std::string_view name) {
+		auto it = subcommands_.find(std::string(name));
+		return it != subcommands_.end() ? it->second.get() : nullptr;
+	}
+
+	Parser &Parser::require_subcommand(int count) {
+		required_subcommand_count_ = count;
+		return *this;
+	}
+
 	Result<void> Parser::parse(int argc, char **argv) {
 		std::vector<std::string> args;
 		args.reserve(static_cast<size_t>(argc) - 1);
