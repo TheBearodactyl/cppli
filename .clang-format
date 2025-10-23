@@ -14,6 +14,8 @@ AllowShortLambdasOnASingleLine: None
 AllowShortLoopsOnASingleLine: true
 AlwaysBreakAfterReturnType: None
 AlwaysBreakTemplateDeclarations: Yes
+BinPackParameters: false
+BinPackArguments: false
 BreakBeforeBraces: Custom
 BraceWrapping:
   AfterCaseLabel: false
@@ -32,7 +34,7 @@ BreakBeforeBinaryOperators: None
 BreakBeforeTernaryOperators: true
 BreakConstructorInitializers: BeforeColon
 BreakInheritanceList: BeforeColon
-ColumnLimit: 500
+ColumnLimit: 120
 CompactNamespaces: false
 ContinuationIndentWidth: 4
 IndentCaseLabels: true

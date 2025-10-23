@@ -17,9 +17,11 @@ add_library(
     src/cppli.cpp
     src/cppli_error.cpp
     src/cppli_types.cpp
+	src/cppli_subcommand.cpp
     include/cppli.hpp
     include/cppli_error.hpp
     include/cppli_types.hpp
+	include/cppli_subcommand.hpp
 )
 
 target_include_directories(

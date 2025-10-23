@@ -1,7 +1,8 @@
 #include <cppli.hpp>
-#include <cppli_error.hpp>
+#include <cppli_subcommand.hpp>
 #include <iostream>
 #include <sstream>
+#include <string>
 
 #ifdef _WIN32
 #include <io.h>
@@ -13,9 +14,6 @@
 namespace cli {
 
 	namespace {
-		/**
-		 * @brief RAII helper class for ANSI color codes
-		 */
 		class ColorGuard {
 		  public:
 			ColorGuard(std::ostream &os, const char *color) : os_(os) {
@@ -53,39 +51,56 @@ namespace cli {
 		constexpr const char *RED = "\033[31m";
 	}// namespace
 
-	Parser::Parser(std::string app_name, std::string description, std::string version)
-		: app_name_(std::move(app_name)), description_(std::move(description)), version_(std::move(version)) {
+	Subcommand::Subcommand(std::string name, std::string description, Parser *parent, Subcommand *parent_subcommand)
+		: name_(std::move(name)), description_(std::move(description)), parent_(parent),
+		  parent_subcommand_(parent_subcommand) {
 	}
 
-	Parser &Parser::add_help_flag() {
-		add_flag<bool>("help", "Display this help message").set_short_name("h");
+	Subcommand &Subcommand::add_subcommand(std::string name, std::string description) {
+		auto subcmd = std::make_unique<Subcommand>(name, std::move(description), parent_, this);
+		auto *ptr = subcmd.get();
+		subcommands_[name] = std::move(subcmd);
+		return *ptr;
+	}
+
+	Subcommand &Subcommand::set_callback(std::function<void()> callback) {
+		callback_ = std::move(callback);
 		return *this;
 	}
 
-	Parser &Parser::add_version_flag() {
-		add_flag<bool>("version", "Display version information").set_short_name("V");
+	Subcommand &Subcommand::add_help_flag() {
+		add_flag<bool>("help", "Display help for this subcommand").set_short_name("h");
 		return *this;
 	}
 
-	Parser &Parser::add_example(std::string description, std::string command) {
+	Subcommand &Subcommand::add_example(std::string description, std::string command) {
 		examples_.push_back({std::move(description), std::move(command)});
 		return *this;
 	}
 
-	Result<void> Parser::parse(int argc, char **argv) {
-		std::vector<std::string> args;
-		args.reserve(static_cast<size_t>(argc) - 1);
-		for (int i = 1; i < argc; ++i) {
-			args.emplace_back(argv[i]);
-		}
-		return parse(args);
+	Subcommand &Subcommand::set_fallthrough(bool allow) {
+		fallthrough_ = allow;
+		return *this;
 	}
 
-	Result<void> Parser::parse(const std::vector<std::string> &args) {
+	bool Subcommand::has(std::string_view flag_name) const {
+		auto it = flags_.find(std::string(flag_name));
+		return it != flags_.end() && it->second.has_value();
+	}
+
+	std::optional<std::string> Subcommand::get_selected_subcommand() const {
+		return selected_subcommand_;
+	}
+
+	Subcommand *Subcommand::get_subcommand(std::string_view name) {
+		auto it = subcommands_.find(std::string(name));
+		return it != subcommands_.end() ? it->second.get() : nullptr;
+	}
+
+	Result<size_t> Subcommand::parse_args(const std::vector<std::string> &args, size_t start_index) {
 		short_to_long_.clear();
 		for (const auto &[name, storage]: flags_) {
 			const auto s_name = storage.get_short_name();
-
 			if (! s_name.empty()) {
 				short_to_long_[s_name] = name;
 			}
@@ -93,12 +108,14 @@ namespace cli {
 
 		size_t pos_index = 0;
 		bool after_double_dash = false;
+		size_t i = start_index;
 
-		for (size_t i = 0; i < args.size(); ++i) {
+		while (i < args.size()) {
 			const auto &arg = args[i];
 
 			if (arg == "--") {
 				after_double_dash = true;
+				++i;
 				continue;
 			}
 
@@ -110,40 +127,29 @@ namespace cli {
 
 					auto result = subcommand.parse_args(args, i + 1);
 					if (! result) {
-						return Result<void>::err(result.error());
+						return Result<size_t>::err(result.error());
 					}
 
 					subcommand.parsed_ = true;
-
 					if (subcommand.help_requested_) {
 						help_requested_ = true;
-						parsed_ = true;
-						return Result<void>::ok();
 					}
 
-					auto validation = subcommand.validate_requirements();
-					if (! validation) {
-						return validation;
-					}
-
-					parsed_ = true;
-
-					subcommand.invoke_callback();
-
-					return Result<void>::ok();
+					return Result<size_t>::ok(result.value());
 				}
 			}
 
 			if (after_double_dash || (arg.empty() || arg[0] != '-')) {
 				if (pos_index >= positionals_.size()) {
-					return Result<void>::err(Error::too_many_positionals());
+					return Result<size_t>::ok(i);
 				}
 
 				auto result = positionals_[pos_index].set_value(arg);
 				if (! result) {
-					return result;
+					return Result<size_t>::err(result.error());
 				}
 				++pos_index;
+				++i;
 				continue;
 			}
 
@@ -166,7 +172,11 @@ namespace cli {
 				if (it != short_to_long_.end()) {
 					flag_name = it->second;
 				} else {
-					return Result<void>::err(Error::unknown_flag(arg));
+					if (fallthrough_) {
+						// Unknown flag with fallthrough - let parent handle it
+						return Result<size_t>::ok(i);
+					}
+					return Result<size_t>::err(Error::unknown_flag(arg));
 				}
 			}
 
@@ -174,13 +184,12 @@ namespace cli {
 				help_requested_ = true;
 			}
 
-			if (flag_name == "version") {
-				version_requested_ = true;
-			}
-
 			auto flag_it = flags_.find(flag_name);
 			if (flag_it == flags_.end()) {
-				return Result<void>::err(Error::unknown_flag(arg));
+				if (fallthrough_) {
+					return Result<size_t>::ok(i);
+				}
+				return Result<size_t>::err(Error::unknown_flag(arg));
 			}
 
 			bool is_boolean_flag = flag_it->second.is_boolean();
@@ -206,31 +215,21 @@ namespace cli {
 			}
 
 			if (! has_value) {
-				return Result<void>::err(Error::missing_flag_value(flag_name));
+				return Result<size_t>::err(Error::missing_flag_value(flag_name));
 			}
 
 			auto result = flag_it->second.set_value(flag_value);
 			if (! result) {
-				return result;
+				return Result<size_t>::err(result.error());
 			}
+
+			++i;
 		}
 
-		parsed_ = true;
-
-		if (help_requested_ || version_requested_) {
-			return Result<void>::ok();
-		}
-
-		if (required_subcommand_count_ != 0) {
-			if (required_subcommand_count_ == -1 && ! selected_subcommand_.has_value()) {
-				return Result<void>::err(Error(ErrorCode::MissingRequiredFlag, "A subcommand is required"));
-			}
-		}
-
-		return validate_requirements();
+		return Result<size_t>::ok(i);
 	}
 
-	Result<void> Parser::validate_requirements() const {
+	Result<void> Subcommand::validate_requirements() const {
 		for (const auto &[name, flag]: flags_) {
 			if (flag.is_required() && ! flag.has_value()) {
 				return Result<void>::err(Error::missing_required_flag(name));
@@ -246,25 +245,7 @@ namespace cli {
 		return Result<void>::ok();
 	}
 
-	bool Parser::has(std::string_view flag_name) const {
-		auto it = flags_.find(std::string(flag_name));
-		return it != flags_.end() && it->second.has_value();
-	}
-
-	void Parser::print_help(std::ostream &os) const {
-		os << generate_help();
-	}
-
-	void Parser::print_version(std::ostream &os) const {
-		ColorGuard guard(os, BOLD);
-		os << app_name_;
-		if (! version_.empty()) {
-			os << " v" << version_;
-		}
-		os << "\n";
-	}
-
-	std::string Parser::format_flag_for_help(const FlagStorage &flag, const std::string &long_name) const {
+	std::string Subcommand::format_flag_for_help(const FlagStorage &flag, const std::string &long_name) const {
 		std::ostringstream oss;
 
 		oss << "    ";
@@ -284,15 +265,41 @@ namespace cli {
 		return oss.str();
 	}
 
-	std::string Parser::generate_help() const {
+	std::string Subcommand::get_command_chain() const {
+		std::vector<std::string> chain;
+
+		const Subcommand *current = this;
+		while (current != nullptr) {
+			chain.push_back(current->name_);
+			current = current->parent_subcommand_;
+		}
+
+		if (parent_ != nullptr) {
+			chain.push_back(parent_->app_name());
+		}
+
+		std::reverse(chain.begin(), chain.end());
+
 		std::ostringstream oss;
+
+		for (size_t i = 0; i < chain.size(); ++i) {
+			if (i > 0) {
+				oss << " ";
+			}
+
+			oss << chain[i];
+		}
+
+		return oss.str();
+	}
+
+	std::string Subcommand::generate_help(bool full_chain) const {
+		std::ostringstream oss;
+		std::string command_name = full_chain ? get_command_chain() : name_;
 
 		{
 			ColorGuard guard(oss, BOLD);
-			oss << app_name_;
-			if (! version_.empty()) {
-				oss << " v" << version_;
-			}
+			oss << command_name;
 		}
 		oss << "\n";
 
@@ -301,7 +308,7 @@ namespace cli {
 		}
 
 		oss << "\nUSAGE:\n";
-		oss << "    " << app_name_ << " [OPTIONS]";
+		oss << "    " << name_ << " [OPTIONS]";
 
 		for (const auto &pos: positionals_) {
 			if (pos.is_required()) {
@@ -312,11 +319,7 @@ namespace cli {
 		}
 
 		if (! subcommands_.empty()) {
-			if (required_subcommand_count_ != 0) {
-				oss << " <SUBCOMMAND>";
-			} else {
-				oss << " [SUBCOMMAND]";
-			}
+			oss << " [SUBCOMMAND]";
 		}
 
 		oss << "\n\n";
@@ -337,13 +340,12 @@ namespace cli {
 			oss << "SUBCOMMANDS:\n";
 			for (const auto &[name, sub]: subcommands_) {
 				oss << "    " << name;
-				if (! sub->description().empty()) {
-					oss << " - " << sub->description();
+				if (! sub->description_.empty()) {
+					oss << " - " << sub->description_;
 				}
 				oss << "\n";
 			}
 			oss << "\n";
-			oss << "Use '" << app_name_ << " <SUBCOMMAND> --help' for more information on a subcommand.\n\n";
 		}
 
 		if (! examples_.empty()) {
@@ -357,5 +359,15 @@ namespace cli {
 		}
 
 		return oss.str();
+	}
+
+	void Subcommand::print_help(std::ostream &os, bool full_chain) const {
+		os << generate_help(full_chain);
+	}
+
+	void Subcommand::invoke_callback() const {
+		if (callback_) {
+			callback_();
+		}
 	}
 }// namespace cli

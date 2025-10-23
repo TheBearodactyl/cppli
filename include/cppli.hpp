@@ -1,8 +1,8 @@
-// cppli.hpp - Modified header with fixed type erasure
 #ifndef CPPLI_HPP
 #define CPPLI_HPP
 
 #include "cppli_error.hpp"
+#include "cppli_subcommand.hpp"
 #include "cppli_types.hpp"
 #include <iostream>
 #include <map>
@@ -12,6 +12,7 @@
 #include <vector>
 
 namespace cli {
+	class Subcommand;
 
 	/**
 	 * @brief Main parser class for command-line arguments with type safety
@@ -44,6 +45,34 @@ namespace cli {
 
 		Parser &add_example(std::string description, std::string command);
 
+		/**
+		 * @brief Add a subcommand to the parser.
+		 * @param name Subcommand name (used on command line).
+		 * @param description Brief description for help.
+		 * @return Subcommand& Reference for configuration.
+		 */
+		Subcommand &add_subcommand(std::string name, std::string description);
+
+		/**
+		 * @brief Set whether at least one subcommand is required.
+		 * @param count Number of required subcommands (-1 = at least one, 0 = optional, >0 = exact count).
+		 * @return Parser& for chaining.
+		 */
+		Parser &require_subcommand(int count = -1);
+
+		/**
+		 * @brief Get the name of the selected subcommand, if any.
+		 * @return std::optional<std::string> Subcommand name or nullopt.
+		 */
+		[[nodiscard]] std::optional<std::string> get_selected_subcommand() const;
+
+		/**
+		 * @brief Access a subcommand by name.
+		 * @param name Subcommand name.
+		 * @return Subcommand* Pointer to subcommand, or nullptr if not found.
+		 */
+		[[nodiscard]] Subcommand *get_subcommand(std::string_view name);
+
 		[[nodiscard]] Result<void> parse(int argc, char **argv);
 		[[nodiscard]] Result<void> parse(const std::vector<std::string> &args);
 
@@ -61,6 +90,14 @@ namespace cli {
 		void print_help(std::ostream &os = std::cout) const;
 		void print_version(std::ostream &os = std::cout) const;
 		[[nodiscard]] std::string generate_help() const;
+
+		/**
+		 * @brief Get the application name.
+		 * @return const std::string& Application name.
+		 */
+		[[nodiscard]] const std::string &app_name() const noexcept {
+			return app_name_;
+		}
 
 	  private:
 		/**
@@ -120,9 +157,12 @@ namespace cli {
 		std::map<std::string, std::string> short_to_long_;///< map short-name -> long-name
 		std::vector<PositionalStorage> positionals_;
 		std::vector<Example> examples_;
-		bool parsed_ = false;			///< true after a successful parse
-		bool help_requested_ = false;	///< true if help path was taken
-		bool version_requested_ = false;///< true if version path was taken
+		std::map<std::string, std::unique_ptr<Subcommand>> subcommands_;
+		std::optional<std::string> selected_subcommand_;///< name of selected subcommand
+		int required_subcommand_count_ = 0;				///< -1 = at least one, 0 = optional, >0 = exact count
+		bool parsed_ = false;							///< true after a successful parse
+		bool help_requested_ = false;					///< true if help path was taken
+		bool version_requested_ = false;				///< true if version path was taken
 
 		/**
 		 * @brief Validate required flags and positionals after parsing.
