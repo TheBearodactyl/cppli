@@ -20,8 +20,8 @@
  * @subsection todos_section TODOS
  *
  * Features:
- * - [ ] Add subcommand support
+ * - [x] Add subcommand support
  *
  * Fixes:
- * - [ ] Fix the auto-generated help message not being colored
+ * - [x] Fix the auto-generated help message not being colored
  */
